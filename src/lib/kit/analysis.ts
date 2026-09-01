@@ -1,27 +1,5 @@
-/**
- * Recognition layer — REAL browser-side AI, 100% offline, zero cost.
- *
- *   Stage A — TensorFlow.js + MobileNet classification → category guess.
- *   Stage B — Tesseract.js OCR → brand / model guess via the photo vocabulary.
- *
- * Every stage fails soft: on error or timeout the user simply gets an empty
- * form and types the data manually. Nothing here can crash the app.
- */
-
-import { matchBrand, matchModel } from "./brands";
+import { matchCatalog, type CatalogEntry } from "./catalog";
 import type { KitCategory } from "./kit-db";
-
-export interface DetectionResult {
-  suggestedCategory: KitCategory;
-  confidence: number;
-  labels: string[];
-}
-
-export interface OcrResult {
-  brand: string;
-  model: string;
-  rawText: string;
-}
 
 export interface AiGuess {
   category: KitCategory;
@@ -32,134 +10,45 @@ export interface AiGuess {
   rawText: string;
 }
 
-const CAMERA_LABELS = ["reflex camera", "polaroid camera", "digital watch"];
-const LENS_LABELS = ["lens", "loupe"];
-
-const MOBILENET_TIMEOUT_MS = 20_000;
-const OCR_TIMEOUT_MS = 15_000;
-
-function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
-  return Promise.race([
-    promise,
-    new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`${label} timeout`)), ms)),
-  ]);
-}
-
-function loadImage(src: string): Promise<HTMLImageElement> {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error("image decode failed"));
-    img.src = src;
+export async function runVisualScan(dataUrl: string): Promise<{ catalogHit: CatalogEntry | null, rawText: string }> {
+  const img = new Image();
+  await new Promise((resolve, reject) => {
+    img.onload = resolve;
+    img.onerror = reject;
+    img.src = dataUrl;
   });
-}
 
-function categoryFor(labels: string[]): KitCategory {
-  const text = labels.join(" ").toLowerCase();
-  if (CAMERA_LABELS.some((l) => text.includes(l))) return "Camera";
-  if (LENS_LABELS.some((l) => new RegExp(`\\b${l}\\b`).test(text))) return "Lens";
-  return "Accessory";
-}
+  const canvas = document.createElement("canvas");
+  canvas.width = img.width;
+  canvas.height = img.height;
+  const ctx = canvas.getContext("2d")!;
+  ctx.drawImage(img, 0, 0);
 
-let mobilenetModel: { classify: (img: HTMLImageElement) => Promise<{ className: string; probability: number }[]> } | null =
-  null;
-
-async function getModel() {
-  if (mobilenetModel) return mobilenetModel;
-  const [mobilenet, tf] = await Promise.all([
-    import("@tensorflow-models/mobilenet"),
-    import("@tensorflow/tfjs"),
-  ]);
-  await tf.ready();
-  mobilenetModel = await mobilenet.load({ version: 2, alpha: 1.0 });
-  return mobilenetModel;
-}
-
-/** Stage A — MobileNet classification mapped onto photography categories. */
-export async function detectCategory(dataUrl: string): Promise<DetectionResult> {
-  const fallback: DetectionResult = { suggestedCategory: "Accessory", confidence: 0, labels: [] };
-  try {
-    const model = await withTimeout(getModel(), MOBILENET_TIMEOUT_MS, "mobilenet");
-    const img = await loadImage(dataUrl);
-    const predictions = await withTimeout(model.classify(img), MOBILENET_TIMEOUT_MS, "mobilenet");
-    if (!predictions.length) return fallback;
-    const labels = predictions.map((p) => p.className.toLowerCase());
-    return {
-      suggestedCategory: categoryFor(labels),
-      confidence: predictions[0]?.probability ?? 0,
-      labels,
-    };
-  } catch {
-    return fallback;
+  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const data = imageData.data;
+  for (let i = 0; i < data.length; i += 4) {
+    const gray = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+    const contrast = Math.min(255, Math.max(0, (gray - 128) * 1.8 + 128));
+    data[i] = data[i + 1] = data[i + 2] = contrast;
   }
-}
+  ctx.putImageData(imageData, 0, 0);
 
-/** Stage B — Tesseract.js OCR, filtered through the photography vocabulary. */
-export async function readText(dataUrl: string): Promise<OcrResult> {
-  const empty: OcrResult = { brand: "", model: "", rawText: "" };
-  try {
-    const { createWorker } = await import("tesseract.js");
-    const worker = await withTimeout(createWorker(["eng", "ita"]), OCR_TIMEOUT_MS, "ocr");
-    try {
-      const { data } = await withTimeout(worker.recognize(dataUrl), OCR_TIMEOUT_MS, "ocr");
-      const rawText = (data.text ?? "").replace(/\s+/g, " ").trim();
-      const tokens = rawText.split(" ").filter((t) => t.length > 1);
-      const brand = matchBrand(tokens);
-      const model = matchModel(tokens, brand);
-      return { brand: brand ?? "", model: model ?? "", rawText };
-    } finally {
-      void worker.terminate().catch(() => undefined);
-    }
-  } catch {
-    return empty;
+  const { createWorker } = await import("tesseract.js");
+  const worker = await createWorker(["eng"]);
+  await worker.setParameters({
+    tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-./° ",
+  });
+  
+  const { data: { text } } = await worker.recognize(canvas);
+  await worker.terminate();
+
+  const photographicPattern = /\b(canon|nikon|sony|fuji|fujifilm|olympus|panasonic|lumix|leica|sigma|tamron|tokina|pentax|hasselblad|phase\s?one)\b|\b\d{2,3}mm\b|\bf\/\d+\.?\d*\b|\b(mark\s?(i{1,3}|iv|v|\d))\b/gi;
+  const matches = text.match(photographicPattern);
+  
+  if (!matches || matches.length === 0) {
+    return { catalogHit: null, rawText: text };
   }
-}
 
-/**
- * Runs both stages over every captured angle and merges the best guesses.
- * Always resolves — never throws.
- */
-export async function analyzeFrames(dataUrls: string[]): Promise<AiGuess> {
-  const frames = dataUrls.slice(0, 6);
-  const empty: AiGuess = {
-    category: "Accessory",
-    brand: "",
-    model: "",
-    confidence: 0,
-    labels: [],
-    rawText: "",
-  };
-  if (frames.length === 0) return empty;
-
-  const results = await Promise.all(
-    frames.map(async (frame) => {
-      const [detection, ocr] = await Promise.all([
-        detectCategory(frame).catch(() => null),
-        readText(frame).catch(() => null),
-      ]);
-      return { detection, ocr };
-    }),
-  );
-
-  const best = results
-    .map((r) => r.detection)
-    .filter((d): d is DetectionResult => !!d)
-    .reduce<DetectionResult | null>((a, b) => (!a || b.confidence > a.confidence ? b : a), null);
-
-  const labels = results.flatMap((r) => r.detection?.labels ?? []);
-  const brand = results.map((r) => r.ocr?.brand).find((b) => !!b) ?? "";
-  const model = results.map((r) => r.ocr?.model).find((m) => !!m) ?? "";
-  const rawText = results
-    .map((r) => r.ocr?.rawText ?? "")
-    .filter(Boolean)
-    .join(" · ");
-
-  return {
-    category: labels.length ? categoryFor(labels) : (best?.suggestedCategory ?? "Accessory"),
-    brand,
-    model,
-    confidence: best?.confidence ?? 0,
-    labels,
-    rawText,
-  };
+  const filteredText = matches.join(" ");
+  return { catalogHit: matchCatalog(filteredText), rawText: text };
 }

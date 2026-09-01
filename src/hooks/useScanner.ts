@@ -19,9 +19,10 @@ import {
   type ScanMode,
   type ScanResult,
 } from "@/lib/scanner/types";
-import { analyzeFrames } from "@/lib/kit/analysis";
+import { runVisualScan } from "@/lib/kit/analysis";
 import { matchCatalog } from "@/lib/kit/catalog";
 import { lookupBarcode, splitTitle } from "@/lib/kit/upc-lookup";
+import { searchByEAN } from "@/lib/wikidata";
 import { addItem, getItemByBarcode, type KitCategory, type KitItem } from "@/lib/kit/kit-db";
 
 export interface ManualDraft {
@@ -167,21 +168,39 @@ export function useScanner() {
         setStatus("Looking up product…");
         const found = await lookupBarcode(code).catch(() => null);
         setResult({ ...decoded, itemNotFound: true });
+        
+        let draftCategory: KitCategory = "Accessory";
+        let draftBrand = "";
+        let draftModel = "";
+        let draftNotes = `Barcode: ${code}`;
+        let draftConfidence = 0.6;
+
         if (found) {
-          const { brand, model } = splitTitle(found.title, found.brand);
-          setDraft({
-            ...EMPTY_DRAFT,
-            category: found.category,
-            brand,
-            model,
-            barcode: code,
-            image: snapshot,
-            notes: found.description || `Barcode: ${code}`,
-            confidence: 0.6,
-          });
+          const split = splitTitle(found.title, found.brand);
+          draftBrand = split.brand;
+          draftModel = split.model;
+          draftCategory = found.category as KitCategory;
+          if (found.description) draftNotes = found.description;
         } else {
-          setDraft({ ...EMPTY_DRAFT, barcode: code, image: snapshot, notes: `Barcode: ${code}` });
+          const wiki = await searchByEAN(code);
+          if (wiki) {
+            draftBrand = wiki.brand;
+            draftModel = wiki.model;
+            draftCategory = wiki.category as KitCategory;
+            draftNotes = `Wikidata Barcode: ${code}`;
+          }
         }
+        
+        setDraft({
+          ...EMPTY_DRAFT,
+          category: draftCategory,
+          brand: draftBrand,
+          model: draftModel,
+          barcode: code,
+          image: snapshot,
+          notes: draftNotes,
+          confidence: draftConfidence,
+        });
       }
     } catch (e) {
       setResult(null);
@@ -213,27 +232,26 @@ export function useScanner() {
     setError(null);
     setResult(null);
     setStatus("Running on-device AI…");
-    let guess: Awaited<ReturnType<typeof analyzeFrames>> | null = null;
+    
+    let catalogHit = null;
+    let rawText = "";
+    
     try {
-      guess = await analyzeFrames(captured.map((f) => f.imageData));
-    } catch {
-      guess = null;
+      const res = await runVisualScan(captured[0].imageData);
+      catalogHit = res.catalogHit;
+      rawText = res.rawText;
+    } catch (e) {
+      console.error(e);
     }
-    // Static-dictionary rescue: fragmented OCR like "D850" → "Nikon D850".
-    const catalogHit = guess?.rawText
-      ? (matchCatalog(guess.rawText) ??
-        matchCatalog([guess.brand, guess.model].filter(Boolean).join(" ")))
-      : null;
 
-    // Whatever the AI produced (even nothing), the user confirms manually.
     setDraft({
       ...EMPTY_DRAFT,
-      category: catalogHit?.category ?? guess?.category ?? "Accessory",
-      brand: catalogHit?.brand ?? guess?.brand ?? "",
-      model: catalogHit?.model ?? guess?.model ?? "",
+      category: catalogHit?.category ?? "Accessory",
+      brand: catalogHit?.brand ?? "",
+      model: catalogHit?.model ?? "",
       notes: "",
       image: captured[0]?.imageData ?? "",
-      confidence: catalogHit ? Math.max(guess?.confidence ?? 0, 0.7) : (guess?.confidence ?? 0),
+      confidence: catalogHit ? 0.8 : 0,
     });
     setStatus("");
     setBusy(false);
