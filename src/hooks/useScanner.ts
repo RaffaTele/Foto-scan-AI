@@ -249,7 +249,7 @@ export function useScanner() {
       category: catalogHit?.category ?? "Accessory",
       brand: catalogHit?.brand ?? "",
       model: catalogHit?.model ?? "",
-      notes: "",
+      notes: rawText ? `DEBUG TESTO LETTO: ${rawText}` : "Nessun testo rilevato",
       image: captured[0]?.imageData ?? "",
       confidence: catalogHit ? 0.8 : 0,
     });
