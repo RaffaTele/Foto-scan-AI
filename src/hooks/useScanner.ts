@@ -257,7 +257,7 @@ export function useScanner() {
       await new Promise((resolve, reject) => {
         img.onload = resolve;
         img.onerror = reject;
-        img.src = captured[0].imageData;
+        img.src = captured[0]!.imageData;
       });
       const canvas = document.createElement("canvas");
       canvas.width = img.width;

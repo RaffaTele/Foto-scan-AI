@@ -86,7 +86,7 @@ function ScanPage() {
             onRecognize={() => void scanner.recognizeObject()}
             onReset={scanner.resetFrames}
           />
-          {scanner.mode === 'visual' && (
+          {scanner.mode === 'object' && (
              <button
                 type="button"
                 onClick={scanner.testMagicOCR}

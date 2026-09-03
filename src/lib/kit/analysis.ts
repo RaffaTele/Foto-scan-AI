@@ -27,7 +27,7 @@ export async function runVisualScan(dataUrl: string): Promise<{ catalogHit: Cata
   const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
   const data = imageData.data;
   for (let i = 0; i < data.length; i += 4) {
-    const gray = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+    const gray = 0.299 * data[i]! + 0.587 * data[i + 1]! + 0.114 * data[i + 2]!;
     const contrast = Math.min(255, Math.max(0, (gray - 128) * 1.8 + 128));
     data[i] = data[i + 1] = data[i + 2] = contrast;
   }
