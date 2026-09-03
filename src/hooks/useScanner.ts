@@ -298,6 +298,83 @@ export function useScanner() {
     setBusy(false);
   }, [busy]);
 
+  const testMagicOCR = useCallback(async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    setResult(null);
+
+    const canvas = document.createElement("canvas");
+    canvas.width = 640; canvas.height = 480;
+    const ctx = canvas.getContext("2d")!;
+    ctx.fillStyle = "white"; ctx.fillRect(0,0,640,480);
+    ctx.fillStyle = "black"; ctx.font = "40px sans-serif";
+    ctx.fillText("canon 50mm f/1.8", 100, 240);
+    const fakeDataUrl = canvas.toDataURL();
+
+    const debugSteps: string[] = [];
+
+    try {
+      debugSteps.push("STEP 1: fake frame OK");
+      setStatus(debugSteps.join(" | "));
+
+      const { createWorker } = await import("tesseract.js");
+      debugSteps.push("STEP 2: tesseract importato OK");
+      setStatus(debugSteps.join(" | "));
+
+      const worker = await createWorker(["eng"]);
+      debugSteps.push("STEP 3: worker creato OK");
+      setStatus(debugSteps.join(" | "));
+
+      await worker.setParameters({
+        tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-./° ",
+      });
+      debugSteps.push("STEP 4: parametri impostati OK");
+      setStatus(debugSteps.join(" | "));
+
+      const img = new Image();
+      await new Promise((resolve, reject) => {
+        img.onload = resolve;
+        img.onerror = reject;
+        img.src = fakeDataUrl;
+      });
+      const c2 = document.createElement("canvas");
+      c2.width = img.width; c2.height = img.height;
+      c2.getContext("2d")!.drawImage(img, 0, 0);
+
+      const { data: { text } } = await worker.recognize(c2);
+      await worker.terminate();
+      debugSteps.push(`STEP 5: OCR OK — testo: "${text.slice(0, 80)}"`);
+      setStatus(debugSteps.join(" | "));
+
+      const photographicPattern = /\b(canon|nikon|sony|fuji|fujifilm|olympus|panasonic|lumix|leica|sigma|tamron|tokina|pentax|hasselblad|phase\s?one)\b|\b\d{2,3}mm\b|\bf\/\d+\.?\d*\b|\b(mark\s?(i{1,3}|iv|v|\d))\b/gi;
+      const matches = text.match(photographicPattern);
+      const filteredText = matches ? matches.join(" ") : "";
+      const catalogHit = filteredText ? matchCatalog(filteredText) : null;
+
+      setDraft({
+        ...EMPTY_DRAFT,
+        category: catalogHit?.category ?? "Accessory",
+        brand: catalogHit?.brand ?? "",
+        model: catalogHit?.model ?? "",
+        notes: `DEBUG: ${debugSteps.join(" | ")} | filteredText: "${filteredText}"`,
+        image: fakeDataUrl,
+        confidence: catalogHit ? 0.8 : 0,
+      });
+
+    } catch (e) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      setDraft({
+        ...EMPTY_DRAFT,
+        notes: `CRASH in: ${debugSteps.join(" | ")} | ERRORE: ${errMsg}`,
+        confidence: 0,
+      });
+    }
+
+    setStatus("");
+    setBusy(false);
+  }, [busy]);
+
   const resetFrames = useCallback(() => {
     objectRef.current!.reset();
     setFrames([]);
@@ -365,6 +442,7 @@ export function useScanner() {
     scanBarcode,
     captureAngle,
     recognizeObject,
+    testMagicOCR,
     resetFrames,
     saveToKit,
   };

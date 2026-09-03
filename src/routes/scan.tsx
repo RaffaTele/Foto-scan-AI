@@ -86,6 +86,16 @@ function ScanPage() {
             onRecognize={() => void scanner.recognizeObject()}
             onReset={scanner.resetFrames}
           />
+          {scanner.mode === 'visual' && (
+             <button
+                type="button"
+                onClick={scanner.testMagicOCR}
+                disabled={scanner.busy}
+                className="mt-4 w-full rounded-xl bg-purple-500 py-3 font-display text-white shadow-lg active:scale-95"
+             >
+                MAGIC TEST OCR (No Fotocamera)
+             </button>
+          )}
         </main>
 
         <section className="mt-4 flex-1 space-y-4 px-5">
