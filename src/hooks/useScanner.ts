@@ -231,28 +231,69 @@ export function useScanner() {
     setBusy(true);
     setError(null);
     setResult(null);
-    setStatus("Running on-device AI…");
-    
-    let catalogHit = null;
-    let rawText = "";
-    
+
+    const debugSteps: string[] = [];
+
     try {
-      const res = await runVisualScan(captured[0].imageData);
-      catalogHit = res.catalogHit;
-      rawText = res.rawText;
+      debugSteps.push("STEP 1: frame catturato OK");
+      setStatus(debugSteps.join(" | "));
+
+      const { createWorker } = await import("tesseract.js");
+      debugSteps.push("STEP 2: tesseract importato OK");
+      setStatus(debugSteps.join(" | "));
+
+      const worker = await createWorker(["eng"]);
+      debugSteps.push("STEP 3: worker creato OK");
+      setStatus(debugSteps.join(" | "));
+
+      await worker.setParameters({
+        tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-./° ",
+      });
+      debugSteps.push("STEP 4: parametri impostati OK");
+      setStatus(debugSteps.join(" | "));
+
+      // Create an image from dataUrl to use for tesseract
+      const img = new Image();
+      await new Promise((resolve, reject) => {
+        img.onload = resolve;
+        img.onerror = reject;
+        img.src = captured[0].imageData;
+      });
+      const canvas = document.createElement("canvas");
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext("2d")!;
+      ctx.drawImage(img, 0, 0);
+
+      const { data: { text } } = await worker.recognize(canvas);
+      await worker.terminate();
+      debugSteps.push(`STEP 5: OCR OK — testo: "${text.slice(0, 80)}"`);
+      setStatus(debugSteps.join(" | "));
+
+      const photographicPattern = /\b(canon|nikon|sony|fuji|fujifilm|olympus|panasonic|lumix|leica|sigma|tamron|tokina|pentax|hasselblad|phase\s?one)\b|\b\d{2,3}mm\b|\bf\/\d+\.?\d*\b|\b(mark\s?(i{1,3}|iv|v|\d))\b/gi;
+      const matches = text.match(photographicPattern);
+      const filteredText = matches ? matches.join(" ") : "";
+      const catalogHit = filteredText ? matchCatalog(filteredText) : null;
+
+      setDraft({
+        ...EMPTY_DRAFT,
+        category: catalogHit?.category ?? "Accessory",
+        brand: catalogHit?.brand ?? "",
+        model: catalogHit?.model ?? "",
+        notes: `DEBUG: ${debugSteps.join(" | ")} | filteredText: "${filteredText}"`,
+        image: captured[0]?.imageData ?? "",
+        confidence: catalogHit ? 0.8 : 0,
+      });
+
     } catch (e) {
-      console.error(e);
+      const errMsg = e instanceof Error ? e.message : String(e);
+      setDraft({
+        ...EMPTY_DRAFT,
+        notes: `CRASH in: ${debugSteps.join(" | ")} | ERRORE: ${errMsg}`,
+        confidence: 0,
+      });
     }
 
-    setDraft({
-      ...EMPTY_DRAFT,
-      category: catalogHit?.category ?? "Accessory",
-      brand: catalogHit?.brand ?? "",
-      model: catalogHit?.model ?? "",
-      notes: rawText ? `DEBUG TESTO LETTO: ${rawText}` : "Nessun testo rilevato",
-      image: captured[0]?.imageData ?? "",
-      confidence: catalogHit ? 0.8 : 0,
-    });
     setStatus("");
     setBusy(false);
   }, [busy]);
